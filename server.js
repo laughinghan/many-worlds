@@ -36,8 +36,8 @@ http.createServer((req, res) => {
     }
     const broadcastErr = writeTo => {
       // some kind of error happened; tell everyone who
-      // requested this branch, flushing the queue, and
-      // set up so that anyone can refresh to try again
+      // requested this branch and set up so that anyone
+      // can refresh to try again
       if (!(builds[branchname] instanceof Array)) return;
       builds[branchname].forEach(({res}) => writeTo(res));
       builds[branchname] = undefined; // try again next request
@@ -94,7 +94,7 @@ http.createServer((req, res) => {
             (e) => {
               if (e) return broadcastErr(e.writeTo);
     
-              // boom, done! Clear out queued requests
+              // boom, done! Serve all queued requests
               builds[branchname].forEach(
                 ({req, res}) => serveStatic(req, res));
               builds[branchname] = 'built';
