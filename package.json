@@ -1,0 +1,15 @@
+{
+	"name": "many-worlds",
+	"version": "0.0.1",
+	"description": "Build and serve any branch, PR, or commit of MathQuill, on demand",
+	"main": "server.js",
+	"scripts": {
+		"start": "sh clone-repo.sh; node server.js"
+	},
+	"dependencies": {
+	},
+	"engines": {
+		"node": "6.9.1"
+	},
+	"license": "MPL-2.0"
+}
