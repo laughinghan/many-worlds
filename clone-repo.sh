@@ -24,4 +24,6 @@ echo $(git rev-parse HEAD) > HEAD
 
 # also initialize directory structure
 cd ..
+mkdir public
+cd public
 mkdir branch pull commit

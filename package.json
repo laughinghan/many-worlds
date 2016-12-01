@@ -7,9 +7,10 @@
 		"start": "sh clone-repo.sh; node server.js"
 	},
 	"dependencies": {
+		"ecstatic": "^2.1.0"
 	},
 	"engines": {
-		"node": "6.9.1"
+		"node": "^6.9.1"
 	},
 	"license": "MPL-2.0"
 }

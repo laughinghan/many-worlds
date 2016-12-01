@@ -3,6 +3,13 @@ const url = require('url');
 const fs = require('fs');
 const child_process = require('child_process');
 
+const serveStatic = require('ecstatic')({
+  root: '/tmp/public',
+  showDotfiles: false,
+  cache: false,
+  serverHeader: 'many-worlds/'+require('./package.json').version
+});
+
 const builds = {};
 
 http.createServer((req, res) => {
@@ -11,22 +18,32 @@ http.createServer((req, res) => {
 
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
-  if (/^\/branch\//.test(pathname)) {
-    const [, branchname] = /^\/branch\/([^\/]*)/.exec(pathname)
+  if (/^\/branch(\/|$)/.test(pathname)) {
+    const [, branchname] =
+      pathname.match(/^\/branch\/?([^\/]*)/)
       .map(decodeURIComponent);
+    if (branchname === '') {
+      return res.end('You must provide a branch name to use /branch, for example, /branch/master');
+    }
     if (builds[branchname] instanceof Array) {
       // some request is already checking out or pulling this
       // branch, so just queue up this request
-      builds[branchname].push({req, res});
-      return;
+      return builds[branchname].push({req, res});
     }
     if (builds[branchname] === 'built') {
       // it's already been built, so serve the files
-      serveStatic(req, res);
-      return;
+      return serveStatic(req, res);
     }
+    const broadcastErr = writeTo => {
+      // some kind of error happened; tell everyone who
+      // requested this branch, flushing the queue, and
+      // set up so that anyone can refresh to try again
+      if (!(builds[branchname] instanceof Array)) return;
+      builds[branchname].forEach(({res}) => writeTo(res));
+      builds[branchname] = undefined; // try again next request
+    };
 
-    const worktree_path = '/tmp/branch/' + branchname;
+    const worktree_path = '/tmp/public/branch/' + branchname;
     // we do `mkdir` instead of the equivalent of `test -d`
     // to check whether the directory is there, because we
     // want to avoid the race condition where two requests
@@ -41,46 +58,73 @@ http.createServer((req, res) => {
     // brittle, whereas EEXIST is POSIX standard
     fs.mkdir(worktree_path, e => {
       if (e && e.code === 'EEXIST') {
+        if (builds[branchname] instanceof Array) {
+          // race condition: two of requests both found
+          // builds[branchname] undefined, both check for
+          // existence of the folder; if both see the folder
+          // there, then nobody sets builds[branchname] to
+          // an Array and we can't be here. So this case can
+          // only happen if one of those saw no pre-existing
+          // folder and created it and proceeded with
+          // checking out and building the branch, while the
+          // other saw the newly created folder; its request
+          // should get queued up
+          return builds[branchname].push({req, res});
+        }
+        // the normal case when the folder already exists:
+        // server was restarted, so `builds` was stale
         builds[branchname] = 'built';
-        serveStatic(req, res);
-        return;
+        return serveStatic(req, res);
       }
-      if (e) throw e;
+      if (e) {
+        res.end(e);
+        return broadcastErr(res => res.end(e));
+      }
 
       // first request for this branch, so queue up requests for
       // it while we check it out and build it
       builds[branchname] = [{req, res}];
-      const git_worktree = child_process.spawn('git',
-        ['worktree', 'add', worktree_path, branchname],
-        { cwd: '/tmp/mathquill.git' });
-      git_worktree.stdout.pipe(process.stdout, { end: false });
-      git_worktree.stderr.pipe(process.stderr, { end: false });
-      git_worktree.on('exit', (code) => {
-        if (code === 0) {
-          const make_test = child_process.exec('make test',
-            { cwd: worktree_path });
-          make_test.stdout.pipe(process.stdout, { end: false });
-          make_test.stderr.pipe(process.stderr, { end: false });
-          make_test.on('exit', (code) => {
-            if (code === 0) {
+      spawnCapturingError(
+        'git', ['worktree', 'add', worktree_path, branchname],
+        { cwd: '/tmp/mathquill.git' },
+        (e) => {
+          if (e) return broadcastErr(e.writeTo);
+          spawnCapturingError(
+            'make', ['test'], { cwd: worktree_path },
+            (e) => {
+              if (e) return broadcastErr(e.writeTo);
+    
               // boom, done! Clear out queued requests
               builds[branchname].forEach(
                 ({req, res}) => serveStatic(req, res));
               builds[branchname] = 'built';
-            } else throw new Error(code);
-          });
-        } else throw new Error(code);
-      });
+            });
+        });
     });
-  } else {
-    res.statusCode = 404;
-    res.end(`404 Not Found: ${req.url}`);
+    return;
   }
+  if (pathname !== '/') {
+    res.statusCode = 404;
+    res.write(`Sorry, ${req.url.split('/', 2).join('/')} is not supported.\n`);
+  }
+  res.end('Try /branch/master, or /pull/123, or /commit/da39a3e instead.\n');
 })
 .listen(process.env.PORT);
 
-function serveStatic (req, res) {
-  const ext = req.url.match(/\.[^.]+$/);
-  if (ext) res.setHeader('Content-Type', 'text/' + ext[0].slice(1));
-  fs.createReadStream('/tmp'+req.url).pipe(res);
+function spawnCapturingError (cmd, args, opts, next) {
+  const child = child_process.spawn(cmd, args, opts);
+  child.on('exit', (exitCode) => {
+    // calling .pipe() twice only `tee`s if done synchronously
+    function logTo (stdout, stderr) {
+      const shellArgs =
+        args.map(arg => /^\w+$/.test(arg) ? arg : `'${arg}'`);
+      stdout.write(`${cmd} ${shellArgs.join(' ')}\n`);
+      child.stdout.pipe(stdout, { end: false });
+      child.stderr.pipe(stderr, { end: false });
+      if (exitCode) stdout.write(`Exit Code ${code}\n`);
+    }
+    logTo(process.stdout, process.stderr);
+    if (exitCode) next({writeTo: strm => logTo(strm, strm)});
+    else next();
+  });
 }
