@@ -33,10 +33,14 @@ http.createServer((req, res) => {
       // branch, so just queue up this request
       return builds[branchname].push({req, res});
     }
-    if (builds[branchname] === 'built') {
-      // it's already been built, so serve the files
+    if (builds[branchname] instanceof Date
+        && new Date() - builds[branchname] < 5000) {
+      // just built <5s ago, so just serve the files
       return serveStatic(req, res);
     }
+
+    const worktree_path =
+      '/tmp/public/branch/' + encodedBranchname;
     const broadcastErr = msg => {
       // some kind of error happened; tell everyone who
       // requested this branch, then forget so that if anyone
@@ -45,13 +49,23 @@ http.createServer((req, res) => {
       builds[branchname].forEach(({res}) => res.end(msg));
       delete builds[branchname];
     };
+    if (builds[branchname] instanceof Date) {
+      // it's been previously built, git pull and rebuild
+      builds[branchname] = [{req, res}];
+      return execLogged('git fetch && git reset --hard @{u}',
+        { cwd: worktree_path },
+        e => {
+          if (e) return broadcastErr(e);
+          builds[branchname].forEach(
+            ({req, res}) => serveStatic(req, res));
+          builds[branchname] = new Date();
+        });
+    }
 
-    const worktree_path =
-      '/tmp/public/branch/' + encodedBranchname;
     // this branch hasn't been built, so queue up requests for
     // it while we check it out and build it
-      builds[branchname] = [{req, res}];
-    execLogged('sh clean-worktree-add.sh',
+    builds[branchname] = [{req, res}];
+    return execLogged('sh clean-worktree-add.sh',
       { env: { worktree_path, branchname } },
       e => {
         if (e) return broadcastErr(e);
@@ -62,10 +76,9 @@ http.createServer((req, res) => {
             // boom, done! Serve all queued requests
             builds[branchname].forEach(
               ({req, res}) => serveStatic(req, res));
-            builds[branchname] = 'built';
+            builds[branchname] = new Date();
           });
       });
-    return;
   }
   if (pathname !== '/') {
     res.statusCode = 404;
