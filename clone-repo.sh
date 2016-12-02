@@ -22,8 +22,5 @@ git clone --bare https://github.com/mathquill/mathquill.git
 cd mathquill.git
 echo $(git rev-parse HEAD) > HEAD
 
-# also initialize directory structure
-cd ..
-mkdir public
-cd public
-mkdir branch pull commit
+# also initialize directory structure:
+mkdir -p /tmp/public/{branch,pull,commit}
