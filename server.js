@@ -51,12 +51,11 @@ http.createServer((req, res) => {
     // this branch hasn't been built, so queue up requests for
     // it while we check it out and build it
       builds[branchname] = [{req, res}];
-    execFileLogged('sh', ['clean-worktree-add.sh'],
+    execLogged('sh clean-worktree-add.sh',
       { env: { worktree_path, branchname } },
       e => {
         if (e) return broadcastErr(e);
-        execFileLogged(
-          'make', ['test'], { cwd: worktree_path },
+        execLogged('make test', { cwd: worktree_path },
           e => {
             if (e) return broadcastErr(e);
   
@@ -76,19 +75,13 @@ http.createServer((req, res) => {
 })
 .listen(process.env.PORT);
 
-function execFileLogged (cmd, args, opts, cb) {
-  // like execFile, but prints command and args and exit code
+function execLogged (cmd, opts, cb) {
+  // like exec, but prints command and args and exit code
   // if non-zero, and passes them to callback
-  child_process.execFile(cmd, args, opts, (e, stdout, stderr) => {
-    const shellArgs = args.map(arg => arg.replace(/'/g, "'\\''"))
-      .map(arg => /^[\w\/.:=-]+$/.test(arg) ? arg :
-        `'${arg.replace(/'/g,"'\\''")}'`
-        .replace(/^(?:'')+/g, '')
-        .replace(/\\'''/g, "\\'" ));
-    const cmdLine = `${cmd} ${shellArgs.join(' ')}\n`;
+  child_process.exec(cmd, opts, (e, stdout, stderr) => {
     const exitStatus = (e ? `Exit Code ${e.code}\n` : '');
 
-    const output = cmdLine
+    const output = cmd + '\n'
       + (stdout + stderr).replace(/^(?=.)/mg, '    ')
       + exitStatus;
     process.stdout.write(output);
