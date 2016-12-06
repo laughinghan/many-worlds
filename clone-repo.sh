@@ -1,21 +1,22 @@
-test -d /tmp/mathquill && exit
+set -e # exit if anything fails
+test -d /tmp/repo.git && exit
 
-cd /tmp
-git clone --no-checkout https://github.com/mathquill/mathquill.git
+owner=mathquill
+full_name=mathquill/mathquill
 
-# even though `git clone --no-checkout` doesn't check out the
-# master branch, .git/HEAD is still set to 'ref: refs/heads/master'.
-# As far as I can tell, the only thing this is a problem for is doing
-# `git worktree add <path> master` (which complains:
-#   fatal: 'master' is already checked out at '<path>/mathquill'
-#   Exit Status 128
-# ), but that's exactly what we want to do, so that's bad.
-# We could just do `git checkout --detach`, but we don't actually
-# want to check out the files into the working directory (we don't
-# even want a working directory in the first place, we basically
-# want --bare but with remote tracking branches).
-cd mathquill/.git
-git update-ref HEAD --no-deref HEAD
+# Unfortunately there aren't really `git clone` options for something like
+# "mirror but under a namespace", which is understandable, this is a pretty
+# funky use of git, whereas normal mirrors ('refs/*:refs/*') are probably
+# pretty common. So we use git plumbing commands to init the bare repo and
+# set up the remotes and stuff before fetching, essentially manually
+# cloning the repo.
+git init --bare /tmp/repo.git
+cd /tmp/repo.git
+git config remote."$owner".url https://github.com/"$full_name".git
+git config --add remote."$owner".fetch '+refs/heads/*:refs/heads/'"$owner"'/*'
+git config --add remote."$owner".fetch '+refs/tags/*:refs/tags/'"$owner"'/*'
+git config --add remote."$owner".fetch '+refs/pull/*/head:refs/pull/'"$owner"'/*'
+git fetch "$owner"
 
 # also initialize directory structure:
-mkdir -p /tmp/public/{branch,pull,commit}
+mkdir -p /tmp/worktrees/"$full_name"/{branch,pull,commit}

@@ -1,14 +1,10 @@
 set -e # exit if anything fails
-cd /tmp/mathquill
+cd /tmp/repo.git
 
-git rev-parse --verify "$branchname" >/dev/null 2>&1 || {
-  git fetch || true # don't exit on transient network failure
-  if git rev-parse --verify "origin/$branchname" >/dev/null 2>&1; then
-    git branch --track "$branchname" "origin/$branchname"
-  else
-    echo "No such branch: $branchname"
-    exit 1
-  fi
+git fetch mathquill || true # don't exit on transient network failure
+git rev-parse --verify "refs/heads/mathquill/$branchname" >/dev/null 2>&1 || {
+  echo "No such branch: $branchname"
+  exit 1
 }
 
 # gotta clear out any pre-existing worktree because
@@ -16,4 +12,4 @@ git rev-parse --verify "$branchname" >/dev/null 2>&1 || {
 rm -rf "$worktree_path"
 git worktree prune
 
-git worktree add "$worktree_path" "$branchname"
+git worktree add "$worktree_path" "refs/heads/mathquill/$branchname"

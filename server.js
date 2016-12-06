@@ -4,7 +4,7 @@ const fs = require('fs');
 const child_process = require('child_process');
 
 const serveStatic = require('ecstatic')({
-  root: '/tmp/public',
+  root: '/tmp/worktrees',
   showDotfiles: false,
   cache: false,
   headers: {
@@ -33,44 +33,56 @@ http.createServer((req, res) => {
   }
   const reqTime = new Date();
   const pad4 = n => '    '.slice(String(n).length) + n;
-  res.on('finish', () => console.log('[%s]%sms:  %s %s %s', reqTime.toISOString(), pad4(Date.now() - reqTime), res.statusCode, req.method, req.url));
+  res.on('finish', () => console.log('[%s]%sms:  %s %s %s',
+    reqTime.toISOString(), pad4(Date.now() - reqTime),
+    res.statusCode, req.method, req.url));
 
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
-  if (/^\/commit(\/|$)/.test(pathname)) {
-    const [, commit] = pathname.match(/^\/commit\/?([^\/]*)/);
-    if (commit === '') return send(400, 'You must provide a commit SHA hash in order to use /commit/, for example, /commit/da39a3e or /commit/da39a3ee5e6b4b0d3255bfef95601890afd80709\n');
-    if (!/^[0-9a-f]{1,40}$/i.test(commit)) return send(400, `Invalid commit SHA hash: ${commit}\n`);
-    if (commit.length < 4) return send(400, `Commit SHA hash abbreviation must be >=4 hex digits, ${commit} is only ${commit.length} digit${commit.length > 1 ? 's' : ''}\n`);
-    if (builds[commit] instanceof Array) {
-      // some request is already building this commit,
-      // so just queue up this request
-      return builds[commit].push({req, res});
+  if (/^\/mathquill\/mathquill\/commit(\/|$)/.test(pathname)) {
+    const [, commit] =
+      pathname.match(/^\/[^\/]+\/[^\/]+\/commit\/?([^\/]*)/);
+    if (commit === '') return send(400, 'You must provide a commit '
+      + 'SHA hash in order to use .../commit/, for example, '
+      + '.../commit/da39a3e or '
+      + '.../commit/da39a3ee5e6b4b0d3255bfef95601890afd80709\n');
+    if (!/^[0-9a-f]{1,40}$/i.test(commit)) return send(400,
+      `Invalid commit SHA hash: ${commit}\n`);
+    if (commit.length < 4) return send(400, 'Commit SHA hash '
+      + `abbreviation must be >=4 hex digits, ${commit} is only `
+      + `${commit.length} digit${commit.length > 1 ? 's' : ''}\n`);
+
+    // only full-length hashes are used as keys in `builds` cache,
+    // which we can determine before shelling out to `git rev-parse`
+    if (commit.length === 40) {
+      if (builds[commit] === 'built') return serveStatic(req, res);
+      if (builds[commit] instanceof Array) {
+        // some request is already building this commit,
+        // so just queue up this request
+        return builds[commit].push({req, res});
+      }
     }
-    if (builds[commit] === 'built') return serveStatic(req, res);
-    const worktree_path = '/tmp/public/commit/' + commit;
+
     return child_process.exec(
       'git fetch 1>&2; git rev-parse --disambiguate=' + commit,
-      { cwd: '/tmp/mathquill' },
+      { cwd: '/tmp/repo.git' },
       (e, stdout, stderr) => {
         console.error(stderr);
-        if (e) return console.log(e), send(500, e);
+        if (e) return console.log(e), send(500, String(e));
         const [full_hash, more] = stdout.trim().split('\n');
-        if (full_hash === '') return send(404, `No such commit: ${commit}\n`);
-        if (more) return send(300, `Commit SHA hash abbreviation ${commit} is ambiguous, choose one:\n${stdout}`);
+        if (full_hash === '') return send(
+          404, `No such commit: ${commit}\n`);
+        if (more) return send(300, 'Commit SHA hash abbreviation '
+          + `${commit} is ambiguous, choose one:\n${stdout}`);
         if (full_hash !== commit) {
           // permanent redirect to full hash
-          res.writeHead(301, { Location: req.url.replace(commit, full_hash) });
-          return res.end('See ' + req.url.replace(commit, full_hash));
+          const newUrl = req.url.replace(commit, full_hash);
+          res.writeHead(301, { Location: newUrl });
+          return res.end(`See ${newUrl}\n`);
         }
-        
-        if (builds[commit] instanceof Array) {
-          // some request is already building this commit,
-          // so just queue up this request
-          return builds[commit].push({req, res});
-        }
-        if (builds[commit] === 'built') return serveStatic(req, res);
-        
+
+        const worktree_path =
+          '/tmp/worktrees/mathquill/mathquill/commit/' + commit;
         builds[commit] = [{req, res}];
         execLogged('sh worktree-add-commit.sh',
           { env: { worktree_path, commit } },
@@ -88,10 +100,13 @@ http.createServer((req, res) => {
           });
       });
   }
-  if (/^\/branch(\/|$)/.test(pathname)) {
-    const [, encodedBranchname] = pathname.match(/^\/branch\/?([^\/]*)/);
+  if (/^\/mathquill\/mathquill\/branch(\/|$)/.test(pathname)) {
+    const [, encodedBranchname] =
+      pathname.match(/^\/[^\/]+\/[^\/]+\/branch\/?([^\/]*)/);
     const branchname = decodeURIComponent(encodedBranchname);
-    if (branchname === '') send(400, 'You must provide a branch name in order to use /branch/, for example, /branch/master\n');
+    if (branchname === '') send(400, 'You must provide a branch '
+      + 'name in order to use .../branch/, for example, '
+      + '.../branch/master\n');
     if (builds[branchname] instanceof Array) {
       // some request is already checking out or pulling this
       // branch, so just queue up this request
@@ -103,8 +118,8 @@ http.createServer((req, res) => {
       return serveStatic(req, res);
     }
 
-    const worktree_path =
-      '/tmp/public/branch/' + encodedBranchname;
+    const worktree_path = '/tmp/worktrees/mathquill/mathquill/'
+      + 'branch/' + encodedBranchname;
     if (builds[branchname] instanceof Date) {
       // it's been previously built, git pull and rebuild
       builds[branchname] = [{req, res}];
@@ -138,9 +153,12 @@ http.createServer((req, res) => {
   }
   if (pathname !== '/') {
     res.statusCode = 404;
-    res.write(`Sorry, ${req.url.split('/', 2).join('/')} is not supported.\n`);
+    res.write(`Sorry, ${req.url.split('/', 4).join('/')} `
+      + 'is not supported.\n');
   }
-  res.end('Try /branch/master, or /pull/123, or /commit/da39a3e instead.\n');
+  res.end('Try /mathquill/mathquill/branch/master, or '
+    + '/mathquill/mathquill/pull/123, or '
+    + '/mathquill/mathquill/commit/da39a3e instead.\n');
 })
 .listen(process.env.PORT);
 
