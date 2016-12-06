@@ -2,7 +2,7 @@ set -e # exit if anything fails
 cd /tmp/mathquill
 
 git rev-parse --verify "$branchname" >/dev/null 2>&1 || {
-  git fetch
+  git fetch || true # don't exit on transient network failure
   if git rev-parse --verify "origin/$branchname" >/dev/null 2>&1; then
     git branch --track "$branchname" "origin/$branchname"
   else
