@@ -19,11 +19,18 @@ function broadcastErr(buildname, msg) {
   // requested this build, then forget so that if anyone
   // refreshes we'll try again
   if (!builds[buildname]) return;
-  builds[buildname].forEach(({res}) => res.end(msg));
+  builds[buildname].forEach(({res}) => {
+    res.statusCode = 500;
+    res.end(msg);
+  });
   delete builds[buildname];
 }
 
 http.createServer((req, res) => {
+  function send(status, msg) {
+    res.statusCode = status;
+    res.end(msg);
+  }
   const reqTime = new Date();
   const pad4 = n => '    '.slice(String(n).length) + n;
   res.on('finish', () => console.log('[%s]%sms:  %s %s %s', reqTime.toISOString(), pad4(Date.now() - reqTime), res.statusCode, req.method, req.url));
@@ -32,15 +39,9 @@ http.createServer((req, res) => {
   const pathname = parsedUrl.pathname;
   if (/^\/commit(\/|$)/.test(pathname)) {
     const [, commit] = pathname.match(/^\/commit\/?([^\/]*)/);
-    if (commit === '') {
-      return res.end('You must provide a commit SHA hash in order to use /commit, for example, /commit/da39a3e or /commit/da39a3ee5e6b4b0d3255bfef95601890afd80709\n');
-    }
-    if (!/^[0-9a-f]{1,40}$/i.test(commit)) {
-      return res.end(`Invalid commit SHA hash: ${commit}\n`);
-    }
-    if (commit.length < 4) {
-      return res.end(`Commit SHA hash abbreviation must be >=4 hex digits, ${commit} is only ${commit.length} digit${commit.length > 1 ? 's' : ''}\n`);
-    }
+    if (commit === '') return send(400, 'You must provide a commit SHA hash in order to use /commit/, for example, /commit/da39a3e or /commit/da39a3ee5e6b4b0d3255bfef95601890afd80709\n');
+    if (!/^[0-9a-f]{1,40}$/i.test(commit)) return send(400, `Invalid commit SHA hash: ${commit}\n`);
+    if (commit.length < 4) return send(400, `Commit SHA hash abbreviation must be >=4 hex digits, ${commit} is only ${commit.length} digit${commit.length > 1 ? 's' : ''}\n`);
     if (builds[commit] instanceof Array) {
       // some request is already building this commit,
       // so just queue up this request
@@ -49,22 +50,16 @@ http.createServer((req, res) => {
     if (builds[commit] === 'built') return serveStatic(req, res);
     const worktree_path = '/tmp/public/commit/' + commit;
     return child_process.exec(
-      'git fetch; git rev-parse --disambiguate=' + commit,
+      'git fetch 1>&2; git rev-parse --disambiguate=' + commit,
       { cwd: '/tmp/mathquill' },
       (e, stdout, stderr) => {
-        if (e) {
-          console.log(e);
-          return res.end(e);
-        }
-        const full_hashes = stdout.trim().split('\n');
-        if (full_hashes.length === 0) {
-          return res.end(`No such commit: ${commit}\n`);
-        }
-        if (full_hashes.length > 1) {
-          return res.end(`Commit SHA hash abbreviation ${commit} is ambiguous, choose one:\n${stdout}`);
-        }
-        const [full_hash] = full_hashes;
+        console.error(stderr);
+        if (e) return console.log(e), send(500, e);
+        const [full_hash, more] = stdout.trim().split('\n');
+        if (full_hash === '') return send(404, `No such commit: ${commit}\n`);
+        if (more) return send(300, `Commit SHA hash abbreviation ${commit} is ambiguous, choose one:\n${stdout}`);
         if (full_hash !== commit) {
+          // permanent redirect to full hash
           res.writeHead(301, { Location: req.url.replace(commit, full_hash) });
           return res.end('See ' + req.url.replace(commit, full_hash));
         }
@@ -96,9 +91,7 @@ http.createServer((req, res) => {
   if (/^\/branch(\/|$)/.test(pathname)) {
     const [, encodedBranchname] = pathname.match(/^\/branch\/?([^\/]*)/);
     const branchname = decodeURIComponent(encodedBranchname);
-    if (branchname === '') {
-      return res.end('You must provide a branch name in order to use /branch, for example, /branch/master\n');
-    }
+    if (branchname === '') send(400, 'You must provide a branch name in order to use /branch/, for example, /branch/master\n');
     if (builds[branchname] instanceof Array) {
       // some request is already checking out or pulling this
       // branch, so just queue up this request
@@ -151,7 +144,7 @@ http.createServer((req, res) => {
 })
 .listen(process.env.PORT);
 
-function execLogged (cmd, opts, cb) {
+function execLogged(cmd, opts, cb) {
   // like exec, but prints command and args and exit code
   // if non-zero, and passes them to callback
   child_process.exec(cmd, opts, (e, stdout, stderr) => {
