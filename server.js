@@ -3,15 +3,20 @@ const url = require('url');
 const fs = require('fs');
 const child_process = require('child_process');
 
-const serveStatic = require('ecstatic')({
-  root: '/tmp/worktrees',
-  showDotfiles: false,
-  cache: false,
-  headers: {
-    Server: 'many-worlds/'+require('./package.json').version,
-    'X-Powered-By': 'ecstatic on Express'
-  }
-});
+const ecstatic = require('ecstatic');
+function serveStatic(req, res) {
+  const baseDir = req.url.split('/', 5).join('/');
+  const root = '/tmp/worktrees' + baseDir;
+  ecstatic(root, {
+    baseDir: decodeURIComponent(baseDir),
+    showDotfiles: false,
+    cache: false,
+    headers: {
+      Server: 'many-worlds/'+require('./package.json').version,
+      'X-Powered-By': 'ecstatic on Express'
+    }
+  })(req, res);
+}
 
 const builds = {};
 function broadcastErr(buildname, msg) {
@@ -64,7 +69,7 @@ http.createServer((req, res) => {
     }
 
     return child_process.exec(
-      'git fetch 1>&2; git rev-parse --disambiguate=' + commit,
+      'git fetch mathquill 1>&2; git rev-parse --disambiguate=' + commit,
       { cwd: '/tmp/repo.git' },
       (e, stdout, stderr) => {
         console.error(stderr);
@@ -123,7 +128,7 @@ http.createServer((req, res) => {
     if (builds[branchname] instanceof Date) {
       // it's been previously built, git pull and rebuild
       builds[branchname] = [{req, res}];
-      return execLogged('git fetch && git reset --hard @{u}',
+      return execLogged('git fetch mathquill && git reset --hard @{u}',
         { cwd: worktree_path },
         e => {
           // ignore error, likely transient network failure

@@ -10,6 +10,8 @@ full_name=mathquill/mathquill
 # pretty common. So we use git plumbing commands to init the bare repo and
 # set up the remotes and stuff before fetching, essentially manually
 # cloning the repo.
+# GitHub's 'refs/pull/123/head'-style refs are documented at:
+#   https://help.github.com/articles/checking-out-pull-requests-locally/
 git init --bare /tmp/repo.git
 cd /tmp/repo.git
 git config remote."$owner".url https://github.com/"$full_name".git
