@@ -45,43 +45,39 @@ http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
   if (/^\/mathquill\/mathquill\/commit(\/|$)/.test(pathname)) {
-    const [, commit] =
+    const [, encodedCommit] = // this regex is just /*/*/commit/*
       pathname.match(/^\/[^\/]+\/[^\/]+\/commit\/?([^\/]*)/);
-    if (commit === '') return send(400, 'You must provide a commit '
-      + 'SHA hash in order to use .../commit/, for example, '
-      + '.../commit/da39a3e or '
-      + '.../commit/da39a3ee5e6b4b0d3255bfef95601890afd80709\n');
-    if (!/^[0-9a-f]{1,40}$/i.test(commit)) return send(400,
-      `Invalid commit SHA hash: ${commit}\n`);
-    if (commit.length < 4) return send(400, 'Commit SHA hash '
-      + `abbreviation must be >=4 hex digits, ${commit} is only `
-      + `${commit.length} digit${commit.length > 1 ? 's' : ''}\n`);
-
+    const commit = decodeURIComponent(encodedCommit);
+    if (commit === '') return send(400, 'You must provide a commit-ish '
+      + 'in order to use .../commit/, for example, .../commit/da39a3e '
+      + 'or .../commit/da39a3ee5e6b4b0d3255bfef95601890afd80709\n');
     // only full-length hashes are used as keys in `builds` cache,
     // which we can determine before shelling out to `git rev-parse`
-    if (commit.length === 40) {
-      if (builds[commit] === 'built') return serveStatic(req, res);
-      if (builds[commit] instanceof Array) {
-        // some request is already building this commit,
-        // so just queue up this request
-        return builds[commit].push({req, res});
-      }
+    if (builds[commit] === 'built') return serveStatic(req, res);
+    if (builds[commit] instanceof Array) {
+      // some request is already building this commit,
+      // so just queue up this request
+      return builds[commit].push({req, res});
     }
 
-    return child_process.exec(
-      'git fetch mathquill 1>&2; git rev-parse --disambiguate=' + commit,
-      { cwd: '/tmp/repo.git' },
+    return child_process.exec('sh resolve-commit-ish.sh',
+      { env: { commitish: commit } },
       (e, stdout, stderr) => {
-        console.error(stderr);
-        if (e) return console.log(e), send(500, String(e));
-        const [full_hash, more] = stdout.trim().split('\n');
-        if (full_hash === '') return send(
-          404, `No such commit: ${commit}\n`);
-        if (more) return send(300, 'Commit SHA hash abbreviation '
-          + `${commit} is ambiguous, choose one:\n${stdout}`);
+        if (e) {
+          console.log(stdout + stderr + e);
+          return send(500, stdout + stderr + e + '\n');
+        }
+        else console.error(stderr);
+        
+        const lines = stdout.trim().split('\n');
+        if (lines.length > 1) {
+          const [statusCode, ...msgs] = lines;
+          return send(+statusCode, msgs.join('\n') + '\n');
+        }
+        const [full_hash] = lines;
         if (full_hash !== commit) {
           // permanent redirect to full hash
-          const newUrl = req.url.replace(commit, full_hash);
+          const newUrl = req.url.replace(encodedCommit, full_hash);
           res.writeHead(301, { Location: newUrl });
           return res.end(`See ${newUrl}\n`);
         }
@@ -106,7 +102,7 @@ http.createServer((req, res) => {
       });
   }
   if (/^\/mathquill\/mathquill\/branch(\/|$)/.test(pathname)) {
-    const [, encodedBranchname] =
+    const [, encodedBranchname] = // this regex is just /*/*/branch/*
       pathname.match(/^\/[^\/]+\/[^\/]+\/branch\/?([^\/]*)/);
     const branchname = decodeURIComponent(encodedBranchname);
     if (branchname === '') send(400, 'You must provide a branch '
