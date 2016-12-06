@@ -3,84 +3,101 @@ const url = require('url');
 const fs = require('fs');
 const child_process = require('child_process');
 
+const serveStatic = require('ecstatic')({
+  root: '/tmp/public',
+  showDotfiles: false,
+  cache: false,
+  headers: {
+    Server: 'many-worlds/'+require('./package.json').version,
+    'X-Powered-By': 'ecstatic on Express'
+  }
+});
+
 const builds = {};
 
 http.createServer((req, res) => {
   const reqTime = new Date();
-  res.on('finish', () => console.log('[%s] %s %s %s - %sms', reqTime.toISOString(), res.statusCode, req.method, req.url, Date.now() - reqTime));
+  const pad4 = n => '    '.slice(String(n).length) + n
+  res.on('finish', () => console.log('[%s]%sms:  %s %s %s', reqTime.toISOString(), pad4(Date.now() - reqTime), res.statusCode, req.method, req.url));
 
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
-  if (/^\/branch\//.test(pathname)) {
-    const [, branchname] = /^\/branch\/([^\/]*)/.exec(pathname)
-      .map(decodeURIComponent);
+  if (/^\/branch(\/|$)/.test(pathname)) {
+    const [, encodedBranchname] = pathname.match(/^\/branch\/?([^\/]*)/);
+    const branchname = decodeURIComponent(encodedBranchname);
+    if (branchname === '') {
+      return res.end('You must provide a branch name in order to use /branch, for example, /branch/master');
+    }
     if (builds[branchname] instanceof Array) {
       // some request is already checking out or pulling this
       // branch, so just queue up this request
-      builds[branchname].push({req, res});
-      return;
+      return builds[branchname].push({req, res});
     }
-    if (builds[branchname] === 'built') {
-      // it's already been built, so serve the files
-      serveStatic(req, res);
-      return;
+    if (builds[branchname] instanceof Date
+        && new Date() - builds[branchname] < 5000) {
+      // just built <5s ago, so just serve the files
+      return serveStatic(req, res);
     }
 
-    const worktree_path = '/tmp/branch/' + branchname;
-    // we do `mkdir` instead of the equivalent of `test -d`
-    // to check whether the directory is there, because we
-    // want to avoid the race condition where two requests
-    // both check whether the directory is there, see it
-    // isn't, then both do `git worktree add` and one fails
-    // rather than queueing up waiting for the other.
-    // We could also just jump straight to `git worktree add`,
-    // but then we'd have to parse the error message to see
-    // if it's because someone already did it or if it's
-    // some other error, and there's no --porcelain option
-    // for `git worktree add` (only for `list`) so it'd be
-    // brittle, whereas EEXIST is POSIX standard
-    fs.mkdir(worktree_path, e => {
-      if (e && e.code === 'EEXIST') {
-        builds[branchname] = 'built';
-        serveStatic(req, res);
-        return;
-      }
-      if (e) throw e;
-
-      // first request for this branch, so queue up requests for
-      // it while we check it out and build it
+    const worktree_path =
+      '/tmp/public/branch/' + encodedBranchname;
+    const broadcastErr = msg => {
+      // some kind of error happened; tell everyone who
+      // requested this branch, then forget so that if anyone
+      // refreshes we'll try again
+      if (!builds[branchname]) return;
+      builds[branchname].forEach(({res}) => res.end(msg));
+      delete builds[branchname];
+    };
+    if (builds[branchname] instanceof Date) {
+      // it's been previously built, git pull and rebuild
       builds[branchname] = [{req, res}];
-      const git_worktree = child_process.spawn('git',
-        ['worktree', 'add', worktree_path, branchname],
-        { cwd: '/tmp/mathquill.git' });
-      git_worktree.stdout.pipe(process.stdout, { end: false });
-      git_worktree.stderr.pipe(process.stderr, { end: false });
-      git_worktree.on('exit', (code) => {
-        if (code === 0) {
-          const make_test = child_process.exec('make test',
-            { cwd: worktree_path });
-          make_test.stdout.pipe(process.stdout, { end: false });
-          make_test.stderr.pipe(process.stderr, { end: false });
-          make_test.on('exit', (code) => {
-            if (code === 0) {
-              // boom, done! Clear out queued requests
-              builds[branchname].forEach(
-                ({req, res}) => serveStatic(req, res));
-              builds[branchname] = 'built';
-            } else throw new Error(code);
+      return execLogged('git fetch && git reset --hard @{u}',
+        { cwd: worktree_path },
+        e => {
+          if (e) return broadcastErr(e);
+          builds[branchname].forEach(
+            ({req, res}) => serveStatic(req, res));
+          builds[branchname] = new Date();
+        });
+    }
+
+    // this branch hasn't been built, so queue up requests for
+    // it while we check it out and build it
+    builds[branchname] = [{req, res}];
+    return execLogged('sh clean-worktree-add.sh',
+      { env: { worktree_path, branchname } },
+      e => {
+        if (e) return broadcastErr(e);
+        execLogged('make test', { cwd: worktree_path },
+          e => {
+            if (e) return broadcastErr(e);
+  
+            // boom, done! Serve all queued requests
+            builds[branchname].forEach(
+              ({req, res}) => serveStatic(req, res));
+            builds[branchname] = new Date();
           });
-        } else throw new Error(code);
       });
-    });
-  } else {
-    res.statusCode = 404;
-    res.end(`404 Not Found: ${req.url}`);
   }
+  if (pathname !== '/') {
+    res.statusCode = 404;
+    res.write(`Sorry, ${req.url.split('/', 2).join('/')} is not supported.\n`);
+  }
+  res.end('Try /branch/master, or /pull/123, or /commit/da39a3e instead.\n');
 })
 .listen(process.env.PORT);
 
-function serveStatic (req, res) {
-  const ext = req.url.match(/\.[^.]+$/);
-  if (ext) res.setHeader('Content-Type', 'text/' + ext[0].slice(1));
-  fs.createReadStream('/tmp'+req.url).pipe(res);
+function execLogged (cmd, opts, cb) {
+  // like exec, but prints command and args and exit code
+  // if non-zero, and passes them to callback
+  child_process.exec(cmd, opts, (e, stdout, stderr) => {
+    const exitStatus = (e ? `Exit Code ${e.code}\n` : '');
+
+    const output = cmd + '\n'
+      + (stdout + stderr).replace(/^(?=.)/mg, '    ')
+      + exitStatus;
+    process.stdout.write(output);
+    cb(e && output);
+  });
 }
