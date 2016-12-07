@@ -160,7 +160,7 @@ http.createServer((req, res) => {
       });
   }
   if (/^\/mathquill\/mathquill\/pull(\/|$)/.test(pathname)) {
-    const [, encodedPR] = // this regex is just /*/*/branch/*
+    const [, encodedPR] = // this regex is just /*/*/pull/*
       pathname.match(/^\/[^\/]+\/[^\/]+\/pull\/?([^\/]*)/);
     const pr = decodeURIComponent(encodedPR);
     const buildname = 'PR: #' + pr;
