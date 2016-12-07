@@ -84,6 +84,7 @@ http.createServer((req, res) => {
 
         const worktree_path =
           '/tmp/worktrees/mathquill/mathquill/commit/' + commit;
+        // queue up requests while we build this commit
         builds[commit] = [{req, res}];
         execLogged('sh worktree-add-commit.sh',
           { env: { worktree_path, commit } },
@@ -105,7 +106,7 @@ http.createServer((req, res) => {
     const [, encodedBranchname] = // this regex is just /*/*/branch/*
       pathname.match(/^\/[^\/]+\/[^\/]+\/branch\/?([^\/]*)/);
     const branchname = decodeURIComponent(encodedBranchname);
-    if (branchname === '') send(400, 'You must provide a branch '
+    if (branchname === '') return send(400, 'You must provide a branch '
       + 'name in order to use .../branch/, for example, '
       + '.../branch/master\n');
     if (builds[branchname] instanceof Array) {
@@ -124,13 +125,19 @@ http.createServer((req, res) => {
     if (builds[branchname] instanceof Date) {
       // it's been previously built, git pull and rebuild
       builds[branchname] = [{req, res}];
-      return execLogged('git fetch mathquill && git reset --hard @{u}',
+      return execLogged(
+        'git fetch mathquill --update-head-ok && git reset --hard',
         { cwd: worktree_path },
         e => {
           // ignore error, likely transient network failure
-          builds[branchname].forEach(
-            ({req, res}) => serveStatic(req, res));
-          builds[branchname] = new Date();
+          execLogged('make test', { cwd: worktree_path },
+            e => {
+              if (e) return broadcastErr(branchname, e);
+
+              builds[branchname].forEach(
+                ({req, res}) => serveStatic(req, res));
+              builds[branchname] = new Date();
+            });
         });
     }
 
@@ -149,6 +156,65 @@ http.createServer((req, res) => {
             builds[branchname].forEach(
               ({req, res}) => serveStatic(req, res));
             builds[branchname] = new Date();
+          });
+      });
+  }
+  if (/^\/mathquill\/mathquill\/pull(\/|$)/.test(pathname)) {
+    const [, encodedPR] = // this regex is just /*/*/branch/*
+      pathname.match(/^\/[^\/]+\/[^\/]+\/pull\/?([^\/]*)/);
+    const pr = decodeURIComponent(encodedPR);
+    const buildname = 'PR: #' + pr;
+
+    if (pr === '') return send(400, 'You must provide a Pull '
+      + 'Request number in order to use .../pull/, for example, '
+      + '.../pull/123\n');
+    if (builds[buildname] instanceof Array) {
+      // some request is already checking out or pulling this
+      // PR, so just queue up this request
+      return builds[buildname].push({req, res});
+    }
+    if (builds[buildname] instanceof Date
+        && new Date() - builds[buildname] < 5000) {
+      // just built <5s ago, so just serve the files
+      return serveStatic(req, res);
+    }
+
+    const worktree_path =
+      '/tmp/worktrees/mathquill/mathquill/pull/' + pr;
+    if (builds[buildname] instanceof Date) {
+      // it's been previously built, git pull and rebuild
+      builds[buildname] = [{req, res}];
+      return execLogged(
+        'git fetch mathquill && git reset --hard',
+        { cwd: worktree_path },
+        e => {
+          // ignore error, likely transient network failure
+          execLogged('make test', { cwd: worktree_path },
+            e => {
+              if (e) return broadcastErr(buildname, e);
+
+              builds[buildname].forEach(
+                ({req, res}) => serveStatic(req, res));
+              builds[buildname] = new Date();
+            });
+        });
+    }
+
+    // this PR hasn't been built, so queue up requests for it
+    // while we check it out and build it
+    builds[buildname] = [{req, res}];
+    return execLogged('sh worktree-add-pull.sh',
+      { env: { worktree_path, pr } },
+      e => {
+        if (e) return broadcastErr(buildname, e);
+        execLogged('make test', { cwd: worktree_path },
+          e => {
+            if (e) return broadcastErr(buildname, e);
+  
+            // boom, done! Serve all queued requests
+            builds[buildname].forEach(
+              ({req, res}) => serveStatic(req, res));
+            builds[buildname] = new Date();
           });
       });
   }
