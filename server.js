@@ -4,6 +4,8 @@ const fs = require('fs');
 const child_process = require('child_process');
 
 const ecstatic = require('ecstatic');
+  // ecstatic was chosen because of its directory listing feature
+  // and it was easy to use as non-middleware
 function serveStatic(req, res) {
   const baseDir = req.url.split('/', 5).join('/');
   const root = '/tmp/worktrees' + baseDir;
